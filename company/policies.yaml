@@ -1,0 +1,15 @@
+# Machine-enforced approval rules. The harness checks every state-changing action against these
+# BEFORE executing it, independently of what the model decides. Mirrors policies.md.
+approval_rules:
+  - id: high-value-invoice
+    description: Vendor invoices above INR 1,00,000 need Finance Manager approval before entry.
+    when:
+      action: form_submit
+      target: ^/erp/invoices/new$
+      field_gt:
+        amount: 100000
+  - id: vendor-master-change
+    description: Changes to vendor contact, remittance or bank details need Finance Manager approval.
+    when:
+      action: form_submit
+      target: ^/erp/vendors/[^/]+/edit$

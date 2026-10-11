@@ -1,0 +1,4 @@
+anthropic>=1.13
+playwright>=1.50
+PyYAML>=6.0
+pytest>=8

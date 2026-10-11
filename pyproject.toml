@@ -1,0 +1,24 @@
+[project]
+name = "taskpilot"
+version = "0.1.0"
+description = "An autonomous AI task worker that operates company systems through a browser, verifies its own work, and asks humans only when it must."
+requires-python = ">=3.10"
+dependencies = ["anthropic>=1.13", "playwright>=1.50", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+extend-exclude = [".deps"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E731"]
+
+[tool.ruff.lint.per-file-ignores]
+"sim_env/*" = ["E501"]  # inline HTML templates
