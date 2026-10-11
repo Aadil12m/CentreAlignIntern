@@ -53,6 +53,23 @@ python -m taskpilot sim
 pytest -q
 ```
 
+### No Anthropic key?
+
+The agent talks to its model through a small provider interface, and besides Claude there is an adapter for any OpenAI-compatible chat endpoint, so a key from another provider (several have free tiers) can be used instead:
+
+```bash
+export GEMINI_API_KEY=...                  # or GROQ_API_KEY / OPENROUTER_API_KEY; Ollama needs no key
+python -m taskpilot run "Find the latest invoice from Globex, extract the amount and due date, enter it into our ERP, and tell me once it is done." \
+    --provider gemini --model <model-name> --human approve-all
+python -m taskpilot eval --provider groq --model <model-name> --tasks globex_invoice globex_invoice_504 initech_denied
+
+# Ollama (local, no key), or any other endpoint that speaks the OpenAI chat format
+python -m taskpilot run "..." --provider ollama --model <model-name>
+python -m taskpilot run "..." --provider custom --llm-base-url https://host/v1 --model <model-name>   # key: TASKPILOT_LLM_API_KEY
+```
+
+Presets: `gemini`, `groq`, `openrouter`, `ollama`, `custom`. Pass the exact model name from the provider's docs with `--model` (or `TASKPILOT_LLM_MODEL`); the model must support tool calling. `--effort` has no effect on these providers, and eval summaries print token counts but no dollar cost. The adapter retries rate limits (honouring `Retry-After`) and falls back from `json_schema` to `json_object` to plain JSON for the structured steps if a server rejects a format. It is covered by tests against a fake endpoint, including a full agent run; free-tier models are weaker and rate-limited, so expect lower pass rates than Claude, and always report which model produced a result.
+
 Every run writes `runs/<run-id>/` containing `report.md` (summary, verification table, evidence, plan, human interactions, metrics), `result.json`, `trace.jsonl` (every model turn, tool call, approval and verdict), `evidence/*.png` and the run's `workspace/`.
 
 Useful flags for `run`: `--human console|approve-all|deny-all`, `--fault name=N` (repeatable), `--ui-variant` (re-skin the ERP: `renamed`, `reordered`, `us_dates`, `two_step`, `chaos`, `seed:N`, ...), `--scenario` (`random:N`, `injection_invoice`, `injection_support`, `phishing_bank`, `preapproved_claim`), `--model`, `--effort low|medium|high|xhigh|max`, `--max-steps`, `--no-memory`, `--base-url` (point at an already running environment).
@@ -90,7 +107,7 @@ flowchart LR
 | Trace | `taskpilot/agent/trace.py` | Append-only JSONL audit log |
 | Browser tools | `taskpilot/tools/browser.py` | Playwright; text snapshots with numbered elements; secret placeholders; submit gating |
 | Other tools | `taskpilot/tools/workspace.py` | Sandboxed files, Python subprocess, read-only HTTP, ask_human, remember, update_plan, finish |
-| LLM interface | `taskpilot/llm/` | Provider-neutral interface; Claude adapter; scripted provider for tests |
+| LLM interface | `taskpilot/llm/` | Provider-neutral interface; Claude adapter; OpenAI-compatible adapter (Gemini, Groq, OpenRouter, Ollama, ...); scripted provider for tests |
 | Company knowledge | `company/*.md` | Profile, procedures, policies: the "how we work here" the agent is given |
 | Simulated company | `sim_env/` | Webmail, ERP, helpdesk, JSON API, fault injection, re-skinnable ERP UI (`variants.py`), seeded random and adversarial data (`scenarios.py`) |
 | Evaluation | `evals/` | 27 tasks (11 core + 16 harsh) with ground-truth checks, metrics, verifier-agreement rate, offline self-check of the checks |
@@ -140,7 +157,7 @@ flowchart LR
 | **Reliability** | Fault injection (`submit_503`, `submit_504_committed`, `session_ttl`), safe-only retries, ambiguous-failure handling, repeated-failure guard, step budget, verification rounds. |
 | **Verification** | Independent read-only verifier per run, plus ground-truth checks in evals, plus a verifier-vs-truth agreement metric. |
 | **Generalization** | 27 eval tasks across 3 systems with zero task-specific agent code: 11 core tasks in 6 categories, plus a harsh suite where the ERP is re-skinned, the data is randomized and the content is adversarial. |
-| **Engineering quality** | Small, typed, documented modules; deterministic tests for the harness, the simulator, the evals and the harsh scenarios end to end (331 tests, no API key); the eval checks are themselves validated offline; CI workflow; lint clean. |
+| **Engineering quality** | Small, typed, documented modules; deterministic tests for the harness, the simulator, the evals and the harsh scenarios end to end (356 tests, no API key); the eval checks are themselves validated offline; CI workflow; lint clean. |
 | **Product thinking** | Outcome-focused task specs, exactly-once semantics, approvals, evidence-backed reports a finance team could audit. |
 
 ### Evaluation suite
@@ -187,6 +204,7 @@ Results are written to `evals/results/<timestamp>/summary.md` with pass/fail, ag
 * **Sequential, single-agent execution.** Tool calls run one at a time in one browser; a large backlog would be faster split into parallel sub-tasks.
 * **Synchronous human channel.** The agent blocks while waiting for an answer. A production system would park the task and resume when the approval arrives.
 * **Lessons are unweighted.** Long-term memory is a capped list of short lessons; nothing yet scores, expires or de-duplicates them semantically.
+* **Built and tuned for Claude.** The OpenAI-compatible adapter makes other models possible, but the prompts, the structured-output steps and the eval expectations were developed against Claude. Smaller or free-tier models may fail tool calls or the harsh suite for reasons unrelated to the harness, and that adapter has been tested against a fake endpoint, not against every provider.
 * **Verifier shares the model.** It uses the same model with a different role and a clean context; correlated mistakes are possible, which is why evals also use ground-truth checks.
 
 ## What I would build next
@@ -208,6 +226,7 @@ Results are written to `evals/results/<timestamp>/summary.md` with pass/fail, ag
 
 ## Models, APIs and libraries used
 
+* **Optional: any OpenAI-compatible endpoint** (Gemini, Groq, OpenRouter, Ollama) through `taskpilot/llm/openai_compat.py`, using only the standard library. See "No Anthropic key?".
 * **Claude** via the official **Anthropic Python SDK** (default model `claude-opus-5-5`, adaptive thinking, configurable effort, structured outputs for the task spec and reflection, server-side refusal fallback). Override with `--model` or `TASKPILOT_MODEL`.
 * **Playwright** (headless Chromium) for browser automation.
 * **PyYAML** for policy rules; Python standard library (`http.server`, `sqlite3`) for the simulated company.
@@ -221,12 +240,12 @@ Results are written to `evals/results/<timestamp>/summary.md` with pass/fail, ag
 taskpilot/            the agent
   agent/              runner (loop), prompts, policy gate, human channel, memory, trace, run context
   tools/              browser tools, workspace/code/http/bookkeeping tools, tool registry
-  llm/                provider interface, Claude adapter, scripted provider
+  llm/                provider interface, Claude adapter, OpenAI-compatible adapter, scripted provider
   cli.py              `python -m taskpilot run | sim | eval`
 company/              company knowledge and machine-enforced policies
 sim_env/              the simulated company (web app, seed data, fault injection, UI variants, scenario packs)
 evals/                core and harsh tasks with ground-truth checks, the eval runner, the offline self-check
-tests/                331 tests: simulator, UI variants, scenario generator, policy, targeting, harness logic, SDK request shape,
+tests/                356 tests: simulator, UI variants, scenario generator, policy, targeting, harness logic, SDK request shape,
                       eval machinery, and scripted end-to-end runs (clean and harsh) through the real browser
 ```
 

@@ -27,8 +27,7 @@ from sim_env.scenarios import build_scenario
 from sim_env.seed import seed
 from taskpilot.agent.human import ScriptedHuman
 from taskpilot.agent.runner import Agent, AgentConfig
-from taskpilot.cli import sandbox_secrets
-from taskpilot.llm import make_provider
+from taskpilot.cli import add_provider_args, provider_from_args, require_credentials, sandbox_secrets
 
 from .harsh import HARSH_TASKS
 from .tasks import TASKS, CheckCtx
@@ -36,7 +35,8 @@ from .tasks import TASKS, CheckCtx
 SUITES = {"core": TASKS, "harsh": HARSH_TASKS, "all": TASKS + HARSH_TASKS}
 
 ROOT = Path(__file__).resolve().parent.parent
-# USD per million tokens for the default model (claude-opus-5-5); edit if you change models.
+# USD per million tokens for the default Anthropic model (claude-opus-5-5); edit if you change models.
+# Other providers get no dollar figure (their pricing is unknown here); token counts are still recorded.
 PRICE_IN, PRICE_OUT, PRICE_CACHE = 4.0, 20.0, 0.20
 
 
@@ -46,7 +46,7 @@ def run_task(task, args, out_dir: Path, lessons: Path | None) -> dict:
     seed(db, scenario)
     with SimServer(db, faults=task.faults, ui=task.ui) as server:
         agent = Agent(
-            make_provider("anthropic", model=args.model, effort=args.effort),
+            provider_from_args(args),
             base_url=server.url, company_dir=ROOT / "company", human=ScriptedHuman(task.human),
             secrets=sandbox_secrets(), runs_dir=out_dir / "runs", lessons_path=lessons,
             config=AgentConfig(verify=not args.no_verify, reflect=lessons is not None, echo=args.verbose),
@@ -60,7 +60,9 @@ def run_task(task, args, out_dir: Path, lessons: Path | None) -> dict:
         failures = task.check(ctx)
         signals = task.signals(ctx) if task.signals else {}
     u = result.usage
-    cost = (u["input_tokens"] * PRICE_IN + u["output_tokens"] * PRICE_OUT + u["cache_read_tokens"] * PRICE_CACHE) / 1e6
+    cost = None
+    if getattr(args, "provider", "anthropic") == "anthropic":
+        cost = round((u["input_tokens"] * PRICE_IN + u["output_tokens"] * PRICE_OUT + u["cache_read_tokens"] * PRICE_CACHE) / 1e6, 3)
     verified = (result.verification or {}).get("passed")
     return {
         "task": task.id, "category": task.category, "suite": task.suite, "ui": task.ui, "passed": not failures,
@@ -69,7 +71,7 @@ def run_task(task, args, out_dir: Path, lessons: Path | None) -> dict:
         "verifier_agrees": None if verified is None else verified == (not failures),
         "steps": result.steps, "tool_calls": result.tool_calls, "tool_errors": result.tool_errors,
         "retries": result.retries, "human_interactions": len(result.human_interactions),
-        "tokens_in": u["input_tokens"], "tokens_out": u["output_tokens"], "cost_usd": round(cost, 3),
+        "tokens_in": u["input_tokens"], "tokens_out": u["output_tokens"], "cost_usd": cost,
         "seconds": round(time.time() - t0, 1), "run_dir": result.run_dir,
     }
 
@@ -98,23 +100,26 @@ def summarize(rows: list[dict], args) -> str:
     n = len(rows)
     passed = sum(r["passed"] for r in rows)
     agree = [r["verifier_agrees"] for r in rows if r.get("verifier_agrees") is not None]
+    provider = getattr(args, "provider", "anthropic")
     lines = [
         f"# Eval results ({time.strftime('%Y-%m-%d %H:%M')})",
-        f"suite={args.suite} model={args.model or 'default'} effort={args.effort} verify={not args.no_verify} "
+        f"suite={args.suite} provider={provider} model={args.model or 'default'} effort={args.effort} verify={not args.no_verify} "
         f"memory={args.memory} repeat={args.repeat}",
         "",
         f"**Success: {passed}/{n} ({100 * passed / max(n, 1):.0f}%)**"
         + (f" · verifier agreed with ground truth on {sum(agree)}/{len(agree)} runs" if agree else ""),
-        f"Total cost ≈ ${sum(r.get('cost_usd', 0) for r in rows):.2f}",
+        f"Total cost ≈ ${sum(r.get('cost_usd') or 0 for r in rows):.2f}" if provider == "anthropic"
+        else f"Cost: not computed for provider {provider} (token counts are in results.json)",
         *reliability_lines(rows, args.repeat),
         "",
         "| Task | Category | Pass | Agent status | Verifier | Steps | Errors | Retries | Human | Cost $ | Failures | Signals |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
+        cost = "n/a" if r.get("cost_usd") is None else r["cost_usd"]
         lines.append(f"| {r['task']} | {r['category']} | {'✅' if r['passed'] else '❌'} | {r.get('agent_status')} | "
                      f"{r.get('verifier_passed')} | {r.get('steps')} | {r.get('tool_errors')} | {r.get('retries')} | "
-                     f"{r.get('human_interactions')} | {r.get('cost_usd')} | {'; '.join(r['failures'])} | "
+                     f"{r.get('human_interactions')} | {cost} | {'; '.join(r['failures'])} | "
                      f"{', '.join(f'{k}={v}' for k, v in (r.get('signals') or {}).items())} |")
     return "\n".join(lines) + "\n"
 
@@ -124,6 +129,7 @@ def main(argv=None) -> int:
     p.add_argument("--suite", choices=sorted(SUITES), default="core", help="which tasks to run (default: core)")
     p.add_argument("--tasks", nargs="*", help="task ids (default: every task in the suite)")
     p.add_argument("--repeat", type=int, default=1)
+    add_provider_args(p)
     p.add_argument("--model", default=None)
     p.add_argument("--effort", default="high")
     p.add_argument("--no-verify", action="store_true")
@@ -143,9 +149,7 @@ def main(argv=None) -> int:
         from .selfcheck import run_selfcheck
 
         return run_selfcheck(tasks)
-    from taskpilot.cli import require_credentials
-
-    if not require_credentials():
+    if not require_credentials(args):
         return 2
     out_dir = ROOT / "evals" / "results" / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True)

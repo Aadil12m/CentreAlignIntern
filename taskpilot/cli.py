@@ -47,11 +47,39 @@ def make_human(kind: str):
     return ScriptedHuman([])  # deny-all
 
 
-def require_credentials() -> bool:
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        return True
-    print("ANTHROPIC_API_KEY is not set. Export your key first, e.g. export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
-    return False
+def add_provider_args(p: argparse.ArgumentParser) -> None:
+    from taskpilot.llm import PROVIDERS
+
+    p.add_argument("--provider", choices=PROVIDERS, default=os.environ.get("TASKPILOT_PROVIDER", "anthropic"),
+                   help="which model backend to use (default: anthropic); the others speak the OpenAI chat format and need --model")
+    p.add_argument("--llm-base-url", default=None, help="model endpoint for --provider custom (or to override a preset)")
+
+
+def provider_from_args(args):
+    from taskpilot.llm import make_provider
+
+    kwargs = {"model": args.model, "effort": args.effort}
+    if args.provider != "anthropic":
+        kwargs["base_url"] = args.llm_base_url
+    return make_provider(args.provider, **kwargs)
+
+
+def require_credentials(args=None) -> bool:
+    provider = getattr(args, "provider", "anthropic")
+    if provider == "anthropic":
+        if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            return True
+        print("ANTHROPIC_API_KEY is not set. Export your key first, e.g. export ANTHROPIC_API_KEY=sk-ant-...\n"
+              "No Anthropic key? Try --provider gemini|groq|openrouter|ollama (see README).", file=sys.stderr)
+        return False
+    from taskpilot.llm import LLMError
+
+    try:
+        provider_from_args(args)  # builds the client without any network call; reports a missing key, model or URL
+    except LLMError as e:
+        print(e, file=sys.stderr)
+        return False
+    return True
 
 
 def cmd_run(args) -> int:
@@ -59,9 +87,8 @@ def cmd_run(args) -> int:
     from sim_env.scenarios import build_scenario
     from sim_env.seed import seed
     from taskpilot.agent.runner import Agent, AgentConfig
-    from taskpilot.llm import make_provider
 
-    if not require_credentials():
+    if not require_credentials(args):
         return 2
     scenario = build_scenario(args.scenario)
     args.goal = args.goal or (scenario.goal if scenario else "")
@@ -78,7 +105,7 @@ def cmd_run(args) -> int:
         print(f"Simulated company running at {base_url} (db: {db})")
     try:
         agent = Agent(
-            make_provider("anthropic", model=args.model, effort=args.effort),
+            provider_from_args(args),
             base_url=base_url, company_dir=ROOT / "company", human=make_human(args.human),
             secrets=sandbox_secrets(), runs_dir=args.runs_dir,
             lessons_path=None if args.no_memory else Path(args.runs_dir) / "lessons.jsonl",
@@ -126,6 +153,7 @@ def main(argv=None) -> int:
                    "textual_dates, two_step, banner, chaos or seed:N")
     r.add_argument("--scenario", help="harder data: random:N, injection_invoice, injection_support, phishing_bank, preapproved_claim")
     r.add_argument("--human", choices=["console", "approve-all", "deny-all"], default="console")
+    add_provider_args(r)
     r.add_argument("--model", default=None)
     r.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
     r.add_argument("--max-steps", type=int, default=40)

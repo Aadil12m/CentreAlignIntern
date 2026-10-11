@@ -7,6 +7,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements.txt ruff
 python -m playwright install chromium
 export ANTHROPIC_API_KEY=...   # needed only for `run` and `eval`, not for tests
+# no Anthropic key: add `--provider gemini|groq|openrouter|ollama --model <name>` to `run`/`eval` (see README)
 
 ## Check
 - Lint: `ruff check .`
