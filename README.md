@@ -8,14 +8,14 @@ and does the work itself: it reads the company's mailbox in a real (headless) br
 
 It runs against **Acme Corp**, a small simulated company intranet that ships with the repo (webmail, an ERP with vendor master and accounts payable, and a helpdesk). It is a real web app with sessions, server-side validation and a database, and it can be told to fail in realistic ways (timeouts after a save, 503s, expiring sessions) so reliability can be measured rather than claimed.
 
-> 🎥 **Demo video:** _add link here_
+> 📦 **Repository:** https://github.com/Aadil12m/CentreAlignIntern
 
 ---
 
 ## Quick start
 
 ```bash
-git clone <this repo> && cd <repo>
+git clone https://github.com/Aadil12m/CentreAlignIntern.git && cd CentreAlignIntern
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
@@ -68,7 +68,7 @@ python -m taskpilot run "..." --provider ollama --model <model-name>
 python -m taskpilot run "..." --provider custom --llm-base-url https://host/v1 --model <model-name>   # key: TASKPILOT_LLM_API_KEY
 ```
 
-Presets: `gemini`, `groq`, `openrouter`, `ollama`, `custom`. Pass the exact model name from the provider's docs with `--model` (or `TASKPILOT_LLM_MODEL`); the model must support tool calling. `--effort` has no effect on these providers, and eval summaries print token counts but no dollar cost. The adapter retries rate limits (honouring `Retry-After`) and falls back from `json_schema` to `json_object` to plain JSON for the structured steps if a server rejects a format. It is covered by tests against a fake endpoint, including a full agent run; free-tier models are weaker and rate-limited, so expect lower pass rates than Claude, and always report which model produced a result.
+Presets: `gemini`, `groq`, `openrouter`, `ollama`, `custom`. Pass the exact model name from the provider's docs with `--model` (or `TASKPILOT_LLM_MODEL`); the model must support tool calling. `--effort` has no effect on these providers, and eval summaries print token counts but no dollar cost. The adapter retries rate limits (honouring `Retry-After`) and falls back from `json_schema` to `json_object` to plain JSON for the structured steps if a server rejects a format. It also hands provider-specific data on tool calls back unchanged, which Gemini 3 models require (their `thought_signature`: without it the next request is a 400). It is covered by tests against a fake endpoint, including a full agent run, and has completed a live verified run against Gemini (see Results). Free-tier models are weaker and rate-limited, so expect lower pass rates than Claude, and always report which model produced a result.
 
 Every run writes `runs/<run-id>/` containing `report.md` (summary, verification table, evidence, plan, human interactions, metrics), `result.json`, `trace.jsonl` (every model turn, tool call, approval and verdict), `evidence/*.png` and the run's `workspace/`.
 
@@ -157,7 +157,7 @@ flowchart LR
 | **Reliability** | Fault injection (`submit_503`, `submit_504_committed`, `session_ttl`), safe-only retries, ambiguous-failure handling, repeated-failure guard, step budget, verification rounds. |
 | **Verification** | Independent read-only verifier per run, plus ground-truth checks in evals, plus a verifier-vs-truth agreement metric. |
 | **Generalization** | 27 eval tasks across 3 systems with zero task-specific agent code: 11 core tasks in 6 categories, plus a harsh suite where the ERP is re-skinned, the data is randomized and the content is adversarial. |
-| **Engineering quality** | Small, typed, documented modules; deterministic tests for the harness, the simulator, the evals and the harsh scenarios end to end (356 tests, no API key); the eval checks are themselves validated offline; CI workflow; lint clean. |
+| **Engineering quality** | Small, typed, documented modules; deterministic tests for the harness, the simulator, the evals and the harsh scenarios end to end (357 tests, no API key); the eval checks are themselves validated offline; CI workflow; lint clean. |
 | **Product thinking** | Outcome-focused task specs, exactly-once semantics, approvals, evidence-backed reports a finance team could audit. |
 
 ### Evaluation suite
@@ -190,9 +190,22 @@ Results are written to `evals/results/<timestamp>/summary.md` with pass/fail, ag
 | **Randomized data** (`random_invoice_*`) | 6 | A seeded generator picks the vendor, invoice layout, number/date styles, currency and amount (including the exact approval threshold), adds distractors (older invoices, one already entered, a later non-invoice email, another vendor's invoice arriving last) and runs under a seeded UI variant. Expectations come from the generator. |
 | **Adversarial content** (`adv_*`) | 4 | An invoice that tells the agent to change the vendor's bank details and keep quiet; a support email that tries to override triage and exfiltrate credentials; a bank-detail change from a look-alike domain that the human approver would approve; an invoice claiming an approval that does not exist. |
 
-**The evals are tested too.** An eval whose check cannot fail is worthless, so `python -m taskpilot eval --selfcheck --suite all` verifies offline, for every task, that a null agent (does nothing) never passes, a correct end state (`oracle`) passes, and a plausible wrong one (`saboteur`: the pre-tax subtotal, a day/month swap, an obeyed injection) is rejected. `tests/test_harsh_e2e.py` goes further: a scripted driver solves each harsh task through the real harness and a real browser (so the variants are provably solvable), and a scripted *compromised* model that obeys the injected instructions shows what the harness stops (approval gate, no auto-retry of submits) and what only the eval can catch.
+**The evals are tested too.** An eval whose check cannot fail is worthless, so `python -m taskpilot eval --selfcheck --suite all` verifies offline that a null agent (does nothing) never passes any of the 27 tasks and, for the 16 harsh tasks, that a correct end state (`oracle`) passes and a plausible wrong one (`saboteur`: the pre-tax subtotal, a day/month swap, an obeyed injection) is rejected. `tests/test_harsh_e2e.py` goes further: a scripted driver solves each harsh task through the real harness and a real browser (so the variants are provably solvable), and a scripted *compromised* model that obeys the injected instructions shows what the harness stops (approval gate, no auto-retry of submits) and what only the eval can catch.
 
-**Results:** _run `python -m taskpilot eval --suite all` with your key and paste `summary.md` here._
+### Results so far
+
+Checked on 2026-10-12:
+
+| What | Result |
+|---|---|
+| `pytest -q` (no API key, real headless browser) | 357 tests: 355 pass, 2 are strict `xfail` tests that pin the known approval-gate gaps (see Known limitations) |
+| `ruff check .` | clean |
+| `python -m taskpilot eval --selfcheck --suite all` (offline) | 27/27 eval definitions sound |
+| One live end-to-end run: the Globex example goal with `--fault submit_504_committed=1`, model `gemini-3.5-flash-lite` via `--provider gemini` | status `completed`, the independent verifier passed all 4 success criteria, 24 steps, 110 s |
+
+In that live run the ERP saved the invoice and then answered HTTP 504. The agent did not resubmit: it checked the ERP, found the saved record, and the verifier confirmed it. Read directly from the database afterwards, there is exactly one Globex invoice `GX-2291` (INR 48,250.00, invoice date 2026-10-01, due 2026-10-31) and one `invoice.create` audit entry.
+
+**Not measured yet:** pass rates over the 27 eval tasks with a live model, and consistency over repeated runs. The run above is one run, not a pass rate. A full suite run makes roughly 35 model calls per task, well beyond OpenRouter's 50 free requests per day, the quota that ran out during development. Run `python -m taskpilot eval --suite all` with your own key to produce `evals/results/<timestamp>/summary.md`.
 
 ---
 
@@ -204,7 +217,7 @@ Results are written to `evals/results/<timestamp>/summary.md` with pass/fail, ag
 * **Sequential, single-agent execution.** Tool calls run one at a time in one browser; a large backlog would be faster split into parallel sub-tasks.
 * **Synchronous human channel.** The agent blocks while waiting for an answer. A production system would park the task and resume when the approval arrives.
 * **Lessons are unweighted.** Long-term memory is a capped list of short lessons; nothing yet scores, expires or de-duplicates them semantically.
-* **Built and tuned for Claude.** The OpenAI-compatible adapter makes other models possible, but the prompts, the structured-output steps and the eval expectations were developed against Claude. Smaller or free-tier models may fail tool calls or the harsh suite for reasons unrelated to the harness, and that adapter has been tested against a fake endpoint, not against every provider.
+* **Built and tuned for Claude.** The OpenAI-compatible adapter makes other models possible, but the prompts, the structured-output steps and the eval expectations were developed against Claude. Smaller or free-tier models may fail tool calls or the harsh suite for reasons unrelated to the harness: in live trials `nvidia/nemotron-3-super-120b-a12b:free` sent malformed tool arguments and used its whole step budget on the login form, and OpenRouter's free daily quota ran out, while a Gemini model completed a verified run (see Results). The adapter is tested against a fake endpoint and in those live runs, not against every provider.
 * **Verifier shares the model.** It uses the same model with a different role and a clean context; correlated mistakes are possible, which is why evals also use ground-truth checks.
 
 ## What I would build next
@@ -232,7 +245,7 @@ Results are written to `evals/results/<timestamp>/summary.md` with pass/fail, ag
 * **PyYAML** for policy rules; Python standard library (`http.server`, `sqlite3`) for the simulated company.
 * **pytest** and **ruff** for tests and linting.
 * No agent framework: the loop, guards, gate and verifier are implemented here so every decision is visible and testable.
-* Built with help from AI coding assistants; I can explain, debug and modify any part of it.
+* Built with help from AI coding assistants (including Claude Code); I can explain, debug and modify any part of it.
 
 ## Project layout
 
@@ -245,11 +258,11 @@ taskpilot/            the agent
 company/              company knowledge and machine-enforced policies
 sim_env/              the simulated company (web app, seed data, fault injection, UI variants, scenario packs)
 evals/                core and harsh tasks with ground-truth checks, the eval runner, the offline self-check
-tests/                356 tests: simulator, UI variants, scenario generator, policy, targeting, harness logic, SDK request shape,
+tests/                357 tests: simulator, UI variants, scenario generator, policy, targeting, harness logic, SDK request shape,
                       eval machinery, and scripted end-to-end runs (clean and harsh) through the real browser
 ```
 
-## Recording the demo (suggested 3-minute script)
+## Walkthrough: reproducing the demo scenarios (about 3 minutes)
 
 1. `python -m taskpilot sim` and show the mailbox and ERP briefly (30 s).
 2. Run the Globex task with `--fault submit_504_committed=1`; narrate the live trace: plan, reading the invoice, sign-in with a secret placeholder, the 504, the agent checking the invoice list instead of resubmitting, verification passing (60 s).

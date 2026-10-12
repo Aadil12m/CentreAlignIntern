@@ -106,6 +106,17 @@ def test_tool_call_round_trip_and_request_shape():
     assert sent[2]["tool_calls"][0]["id"] == "call_1" and sent[3]["tool_call_id"] == "call_1"
 
 
+def test_extra_content_on_tool_calls_is_sent_back_unchanged():
+    """Gemini 3 puts a thought signature in extra_content and answers 400 if the next request leaves it out."""
+    sig = {"google": {"thought_signature": "abc123=="}}
+    p, _, _ = make([chat(None, [{**call("browser_open", {"url": "/mail"}, id="c1"), "extra_content": sig},
+                                call("browser_open", {"url": "/erp"}, id="c2")], "tool_calls")])
+    r = p.complete(system="s", messages=[{"role": "user", "content": "go"}], tools=TOOLS)
+    sent = to_openai_messages("s", [{"role": "user", "content": "go"}, {"role": "assistant", "content": r.assistant_content}])
+    assert sent[2]["tool_calls"][0]["extra_content"] == sig
+    assert "extra_content" not in sent[2]["tool_calls"][1]  # calls without one stay as they were
+
+
 def test_a_property_named_default_survives_schema_cleaning():
     p, seen, _ = make([chat("ok")])
     schema = {"type": "object", "properties": {"default": {"type": "string", "default": "x"}}}

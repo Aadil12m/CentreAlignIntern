@@ -80,7 +80,9 @@ def to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
         content = m["content"]
         if m["role"] == "assistant":
             blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
-            calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b["input"])}}
+            # extra_content (Gemini's thought signature) must go back exactly as it came, or the next request is a 400
+            calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b["input"])},
+                      **({"extra_content": b["extra_content"]} if b.get("extra_content") else {})}
                      for b in blocks if b.get("type") == "tool_use"]
             msg = {"role": "assistant", "content": _text_of(blocks) or (None if calls else "")}
             if calls:
@@ -214,17 +216,21 @@ class OpenAICompatProvider(LLMProvider):
         msg = choice.get("message") or {}
         text = _THINK.sub("", _text_of(msg.get("content") or "")).strip()
 
-        calls, seen = [], set()
+        calls, tool_blocks, seen = [], [], set()
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function") or {}
             call_id = tc.get("id")
             if not call_id or call_id in seen:  # some servers send empty or repeated ids
                 call_id = f"tp_call_{next(self._ids)}"
             seen.add(call_id)
-            calls.append(ToolCall(call_id, fn.get("name", ""), _parse_arguments(fn.get("arguments"))))
+            c = ToolCall(call_id, fn.get("name", ""), _parse_arguments(fn.get("arguments")))
+            calls.append(c)
+            block = {"type": "tool_use", "id": c.id, "name": c.name, "input": c.input}
+            if tc.get("extra_content"):  # e.g. Gemini 3's thought signature, which has to be echoed on the next request
+                block["extra_content"] = tc["extra_content"]
+            tool_blocks.append(block)
 
-        blocks = ([{"type": "text", "text": text}] if text else []) + [
-            {"type": "tool_use", "id": c.id, "name": c.name, "input": c.input} for c in calls]
+        blocks = ([{"type": "text", "text": text}] if text else []) + tool_blocks
         if not blocks:
             blocks = [{"type": "text", "text": "(empty response)"}]  # an empty assistant turn is rejected on the next call
         stop = "tool_use" if calls else {"length": "max_tokens"}.get(choice.get("finish_reason"), "end_turn")
